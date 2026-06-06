@@ -338,7 +338,13 @@
         supabase.from('complaints').select('*'),
       ]);
 
-    if (incError) throw incError;
+    if (incError) {
+      throw new Error(
+        incError.message.includes('does not exist')
+          ? 'Database tables are missing. Run supabase-setup.sql in your Supabase SQL Editor.'
+          : incError.message
+      );
+    }
     if (compError) throw compError;
 
     const cloudEmpty = !incidentRows?.length && !complaintRows?.length;
@@ -1285,16 +1291,55 @@
     reader.readAsText(file);
   }
 
+  async function enterAppAfterLogin() {
+    showAppShell();
+    try {
+      await loadDataFromCloud();
+    } catch (error) {
+      console.error(error);
+      window.alert(
+        error.message ||
+          'Signed in, but could not load your log. Check that supabase-setup.sql was run in Supabase.'
+      );
+      loadDataLocal();
+    }
+    initApp();
+  }
+
   async function handleAuthSubmit(event) {
     event.preventDefault();
     setAuthError('');
 
     const email = els.authEmail.value.trim();
     const password = els.authPassword.value;
+    const submitBtn = els.authForm.querySelector('button[type="submit"]');
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      setAuthError(error.message);
+    if (!email || !password) {
+      setAuthError('Enter your email and password.');
+      return;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Signing in…';
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setAuthError(error.message);
+        window.alert(`Sign in failed: ${error.message}`);
+        return;
+      }
+
+      if (data.session) {
+        await enterAppAfterLogin();
+      }
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign in';
+      }
     }
   }
 
@@ -1309,17 +1354,27 @@
       return;
     }
 
-    const { error } = await supabase.auth.signUp({ email, password });
-    if (error) {
-      setAuthError(error.message);
-      return;
-    }
+    els.authSignUp.disabled = true;
+    els.authSignUp.textContent = 'Creating account…';
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-    if (signInError) {
-      setAuthError(
-        'Account created. If email confirmation is enabled in Supabase, confirm your email first.'
-      );
+    try {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        setAuthError(error.message);
+        window.alert(`Could not create account: ${error.message}`);
+        return;
+      }
+
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) {
+        const message =
+          'Account may be created. If email confirmation is enabled in Supabase, check your email first.';
+        setAuthError(message);
+        window.alert(message);
+      }
+    } finally {
+      els.authSignUp.disabled = false;
+      els.authSignUp.textContent = 'Create household account';
     }
   }
 
@@ -1574,18 +1629,14 @@
 
     const { data: { session } } = await supabase.auth.getSession();
     if (session) {
-      showAppShell();
-      await loadDataFromCloud();
-      initApp();
+      await enterAppAfterLogin();
     } else {
       showAuthScreen();
     }
 
     supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session) {
-        showAppShell();
-        await refreshAppData();
-        initApp();
+      if (session && event === 'SIGNED_IN') {
+        await enterAppAfterLogin();
       } else if (event === 'SIGNED_OUT') {
         showAuthScreen();
       }
