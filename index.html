@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Building Incident Log</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="authScreen" class="auth-screen" hidden>
+    <div class="auth-card">
+      <h1>Building Incident Log</h1>
+      <p class="auth-subtitle">Sign in with your household account.</p>
+      <form id="authForm">
+        <div class="form-group">
+          <label for="authEmail">Email</label>
+          <input type="email" id="authEmail" autocomplete="username" required>
+        </div>
+        <div class="form-group">
+          <label for="authPassword">Password</label>
+          <input type="password" id="authPassword" autocomplete="current-password" required>
+        </div>
+        <p class="auth-error" id="authError" hidden></p>
+        <button type="submit" class="btn btn-primary auth-submit">Sign in</button>
+      </form>
+      <details class="auth-setup">
+        <summary>First time? Create household account</summary>
+        <p class="field-note">Create one shared account, then disable new signups in Supabase.</p>
+        <button type="button" id="authSignUp" class="btn btn-secondary">Create account</button>
+      </details>
+    </div>
+  </div>
+
+  <div id="appShell" hidden>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <h1>Building Incident Log</h1>
+        <p class="subtitle">Weekly nuisance documentation — 12am to 11pm</p>
+      </div>
+      <div class="header-actions">
+        <p class="save-status" id="saveStatus" aria-live="polite"></p>
+        <button type="button" id="signOut" class="btn btn-secondary btn-small">Sign out</button>
+        <div class="week-nav">
+          <button type="button" id="prevWeek" class="btn btn-secondary" aria-label="Previous week">←</button>
+          <div class="week-label">
+            <span id="weekRange"></span>
+          </div>
+          <button type="button" id="nextWeek" class="btn btn-secondary" aria-label="Next week">→</button>
+          <button type="button" id="todayWeek" class="btn btn-secondary">This week</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <section class="grid-section" aria-labelledby="grid-heading">
+      <div class="section-header">
+        <h2 id="grid-heading">Weekly grid</h2>
+        <p class="section-note">Click a cell to log or edit an incident. Filled cells indicate recorded events.</p>
+      </div>
+      <div class="grid-wrapper">
+        <table class="incident-grid" id="incidentGrid">
+          <thead>
+            <tr id="hourHeaderRow">
+              <th class="corner-cell" scope="col">Day / Type</th>
+            </tr>
+          </thead>
+          <tbody id="gridBody"></tbody>
+        </table>
+      </div>
+      <div class="legend" aria-label="Severity legend">
+        <span class="legend-title">Severity</span>
+        <span class="legend-item severity-low">Low</span>
+        <span class="legend-item severity-moderate">Moderate</span>
+        <span class="legend-item severity-high">High</span>
+        <span class="legend-item severity-severe">Severe</span>
+        <span class="legend-item complaint-mark">Blue day header = Complaint filed to landlord</span>
+      </div>
+    </section>
+
+    <section class="complaints-section" aria-labelledby="complaints-heading">
+      <div class="section-header">
+        <h2 id="complaints-heading">Landlord complaints</h2>
+        <button type="button" id="logComplaint" class="btn btn-primary">Log complaint</button>
+      </div>
+      <p class="section-note">Record when you submitted a complaint to the landlord. Set the date range of incidents included — use the same date for both fields when reporting a single day or incident.</p>
+      <div class="complaint-list" id="complaintList" role="list"></div>
+      <p class="empty-state" id="complaintEmpty" hidden>No landlord complaints logged yet.</p>
+    </section>
+
+    <section class="list-section" aria-labelledby="list-heading">
+      <div class="section-header">
+        <h2 id="list-heading">Incident log</h2>
+        <div class="export-actions">
+          <button type="button" id="exportPdf" class="btn btn-primary">Export PDF</button>
+          <button type="button" id="exportCsv" class="btn btn-secondary">Export CSV</button>
+          <button type="button" id="exportBackup" class="btn btn-secondary">Backup data</button>
+          <button type="button" id="importBackup" class="btn btn-secondary">Restore backup</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
+        </div>
+      </div>
+      <p class="export-note">PDF opens your browser’s print dialog — choose <strong>Save as PDF</strong> to share. Data syncs automatically when signed in. Use <strong>Backup data</strong> for an extra copy.</p>
+
+      <div class="filters" id="filters">
+        <div class="filter-group">
+          <label for="filterType">Incident type</label>
+          <select id="filterType">
+            <option value="">All types</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filterSeverity">Severity</label>
+          <select id="filterSeverity">
+            <option value="">All severities</option>
+            <option value="low">Low</option>
+            <option value="moderate">Moderate</option>
+            <option value="high">High</option>
+            <option value="severe">Severe</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filterDateFrom">From</label>
+          <input type="date" id="filterDateFrom">
+        </div>
+        <div class="filter-group">
+          <label for="filterDateTo">To</label>
+          <input type="date" id="filterDateTo">
+        </div>
+        <div class="filter-group filter-check">
+          <label>
+            <input type="checkbox" id="filterLateNight">
+            Late night only (10pm – 7am)
+          </label>
+        </div>
+        <div class="filter-group filter-check">
+          <label>
+            <input type="checkbox" id="filterDisclosed">
+            Disclosed to landlord
+          </label>
+        </div>
+        <button type="button" id="clearFilters" class="btn btn-secondary">Clear filters</button>
+      </div>
+
+      <div class="list-meta">
+        <span id="incidentCount">0 incidents</span>
+      </div>
+
+      <div class="incident-list" id="incidentList" role="list"></div>
+      <p class="empty-state" id="emptyState" hidden>No incidents match the current filters.</p>
+    </section>
+  </main>
+  </div>
+
+  <dialog id="incidentModal" class="modal">
+    <form id="incidentForm" method="dialog">
+      <header class="modal-header">
+        <h2 id="modalTitle">Log incident</h2>
+        <button type="button" class="modal-close" id="closeModal" aria-label="Close">×</button>
+      </header>
+
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="formDate">Date</label>
+            <input type="date" id="formDate" name="date" required>
+          </div>
+          <div class="form-group">
+            <label for="formHour">Hour block</label>
+            <select id="formHour" name="hour" required></select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="formType">Incident type</label>
+            <select id="formType" name="type" required></select>
+          </div>
+          <div class="form-group">
+            <label for="formSeverity">Severity</label>
+            <select id="formSeverity" name="severity" required>
+              <option value="low">Low</option>
+              <option value="moderate">Moderate</option>
+              <option value="high">High</option>
+              <option value="severe">Severe</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="formNotes">Notes</label>
+          <textarea id="formNotes" name="notes" rows="4" placeholder="Describe what occurred, location, duration, and any identifying details."></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group form-check">
+            <label>
+              <input type="checkbox" id="formEvidence" name="hasEvidence">
+              Evidence exists
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group" id="evidenceTypeGroup" hidden>
+          <label for="formEvidenceType">Type of evidence</label>
+          <select id="formEvidenceType" name="evidenceType">
+            <option value="">Select type</option>
+            <option value="photo">Photograph</option>
+            <option value="video">Video recording</option>
+            <option value="audio">Audio recording</option>
+            <option value="witness">Written witness statement</option>
+            <option value="official">Official correspondence</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <span class="form-group-label">Impact on tenant</span>
+          <p class="field-note">Select all that apply.</p>
+          <div class="impact-options" id="formImpactGroup"></div>
+        </div>
+
+      </div>
+
+      <footer class="modal-footer">
+        <button type="button" id="deleteIncident" class="btn btn-danger" hidden>Delete</button>
+        <div class="modal-actions">
+          <button type="button" id="cancelModal" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save incident</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="complaintModal" class="modal">
+    <form id="complaintForm" method="dialog">
+      <header class="modal-header">
+        <h2 id="complaintModalTitle">Log landlord complaint</h2>
+        <button type="button" class="modal-close" id="closeComplaintModal" aria-label="Close">×</button>
+      </header>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="formComplaintDate">Date complaint submitted</label>
+          <input type="date" id="formComplaintDate" name="dateSubmitted" required>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="formCoversFrom">Incidents covered from</label>
+            <input type="date" id="formCoversFrom" name="coversFromDate" required>
+          </div>
+          <div class="form-group">
+            <label for="formCoversThrough">Incidents covered through</label>
+            <input type="date" id="formCoversThrough" name="coversThroughDate" required>
+          </div>
+        </div>
+        <p class="field-note">Incidents within this date range are considered included in this filing.</p>
+
+        <div class="form-group">
+          <label for="formComplaintNotes">Submission notes</label>
+          <textarea id="formComplaintNotes" name="notes" rows="3" placeholder="e.g. Emailed property manager, online portal ticket #1234"></textarea>
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <button type="button" id="deleteComplaint" class="btn btn-danger" hidden>Delete</button>
+        <div class="modal-actions">
+          <button type="button" id="cancelComplaintModal" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save complaint</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="printReport" class="print-report" hidden aria-hidden="true"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
