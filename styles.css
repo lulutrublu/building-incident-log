@@ -87,6 +87,14 @@ body {
   background: var(--bg);
 }
 
+#authScreen[hidden] {
+  display: none !important;
+}
+
+#appShell[hidden] {
+  display: none !important;
+}
+
 .auth-card {
   width: 100%;
   max-width: 400px;
@@ -146,6 +154,11 @@ body {
 .auth-setup .btn {
   margin-top: 0.75rem;
   width: 100%;
+}
+
+.auth-offline {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
 }
 
 .save-status {

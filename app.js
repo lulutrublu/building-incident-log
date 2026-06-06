@@ -136,6 +136,7 @@
     authError: document.getElementById('authError'),
     authStatus: document.getElementById('authStatus'),
     authSignUp: document.getElementById('authSignUp'),
+    useOffline: document.getElementById('useOffline'),
     signOut: document.getElementById('signOut'),
   };
 
@@ -146,13 +147,35 @@
   }
 
   function showAuthScreen() {
-    els.appShell.hidden = true;
-    els.authScreen.hidden = false;
+    if (els.appShell) {
+      els.appShell.hidden = true;
+      els.appShell.setAttribute('aria-hidden', 'true');
+    }
+    if (els.authScreen) {
+      els.authScreen.hidden = false;
+      els.authScreen.removeAttribute('aria-hidden');
+    }
+    document.body.classList.remove('is-signed-in');
+  }
+
+  function useOfflineMode() {
+    cloudEnabled = false;
+    if (els.signOut) els.signOut.hidden = true;
+    loadDataLocal();
+    showAppShell();
+    initApp();
   }
 
   function showAppShell() {
-    els.authScreen.hidden = true;
-    els.appShell.hidden = false;
+    if (els.authScreen) {
+      els.authScreen.hidden = true;
+      els.authScreen.setAttribute('aria-hidden', 'true');
+    }
+    if (els.appShell) {
+      els.appShell.hidden = false;
+      els.appShell.removeAttribute('aria-hidden');
+    }
+    document.body.classList.add('is-signed-in');
   }
 
   function setAuthError(message) {
@@ -1362,22 +1385,22 @@
     }
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         setAuthError(error.message);
         window.alert(`Sign in failed: ${error.message}`);
         return;
       }
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
+      if (!data.session) {
         const message =
-          'Sign in did not start a session. In Supabase → Users, make sure your user is confirmed (Auto confirm user when creating).';
+          'Sign in did not start a session. In Supabase → Users, recreate the user with Auto confirm turned on.';
         setAuthError(message);
         window.alert(message);
         return;
       }
 
+      showAppShell();
       setAuthStatus('Signed in. Loading your log…');
       await enterAppAfterLogin();
     } catch (unexpectedError) {
@@ -1551,6 +1574,9 @@
     }
     if (els.authSignUp) {
       els.authSignUp.addEventListener('click', handleAuthSignUp);
+    }
+    if (els.useOffline) {
+      els.useOffline.addEventListener('click', useOfflineMode);
     }
   }
 
