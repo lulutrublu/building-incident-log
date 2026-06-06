@@ -114,8 +114,12 @@ body {
 }
 
 .auth-error {
-  margin: 0;
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.65rem;
   color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid #f5c6c6;
+  border-radius: var(--radius);
   font-size: 0.85rem;
 }
 
