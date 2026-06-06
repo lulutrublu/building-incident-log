@@ -21,10 +21,11 @@
           <label for="authPassword">Password</label>
           <input type="password" id="authPassword" autocomplete="current-password" required>
         </div>
+        <p class="auth-status" id="authStatus" aria-live="polite"></p>
         <p class="auth-error" id="authError" hidden></p>
         <button type="submit" class="btn btn-primary auth-submit">Sign in</button>
       </form>
-       <div class="auth-setup">
+      <div class="auth-setup">
         <p class="auth-setup-title">First time here?</p>
         <p class="field-note">Enter an email and password above, then create your shared household account.</p>
         <button type="button" id="authSignUp" class="btn btn-secondary">Create household account</button>

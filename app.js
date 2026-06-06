@@ -74,6 +74,7 @@
   let appInitialized = false;
   let saveInFlight = null;
   let authEventsBound = false;
+  let enteringApp = false;
 
   const els = {
     weekRange: document.getElementById('weekRange'),
@@ -133,6 +134,7 @@
     authEmail: document.getElementById('authEmail'),
     authPassword: document.getElementById('authPassword'),
     authError: document.getElementById('authError'),
+    authStatus: document.getElementById('authStatus'),
     authSignUp: document.getElementById('authSignUp'),
     signOut: document.getElementById('signOut'),
   };
@@ -159,8 +161,18 @@
       els.authError.textContent = '';
       return;
     }
+    if (els.authStatus) els.authStatus.textContent = '';
     els.authError.hidden = false;
     els.authError.textContent = message;
+  }
+
+  function setAuthStatus(message) {
+    if (!els.authStatus) return;
+    els.authStatus.textContent = message || '';
+    if (message) {
+      els.authError.hidden = true;
+      els.authError.textContent = '';
+    }
   }
 
   function incidentToRow(incident) {
@@ -1292,18 +1304,28 @@
   }
 
   async function enterAppAfterLogin() {
-    showAppShell();
+    if (enteringApp) return;
+    enteringApp = true;
+
     try {
-      await loadDataFromCloud();
-    } catch (error) {
-      console.error(error);
-      window.alert(
-        error.message ||
-          'Signed in, but could not load your log. Check that supabase-setup.sql was run in Supabase.'
-      );
-      loadDataLocal();
+      showAppShell();
+      setAuthStatus('');
+
+      try {
+        await loadDataFromCloud();
+      } catch (error) {
+        console.error(error);
+        window.alert(
+          error.message ||
+            'Signed in, but could not load your log. Check that supabase-setup.sql was run in Supabase.'
+        );
+        loadDataLocal();
+      }
+
+      initApp();
+    } finally {
+      enteringApp = false;
     }
-    initApp();
   }
 
   async function handleAuthSubmit(event) {
@@ -1325,16 +1347,29 @@
     }
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         setAuthError(error.message);
         window.alert(`Sign in failed: ${error.message}`);
         return;
       }
 
-      if (data.session) {
-        await enterAppAfterLogin();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const message =
+          'Sign in did not start a session. In Supabase → Users, make sure your user is confirmed (Auto confirm user when creating).';
+        setAuthError(message);
+        window.alert(message);
+        return;
       }
+
+      setAuthStatus('Signed in. Loading your log…');
+      await enterAppAfterLogin();
+    } catch (unexpectedError) {
+      console.error(unexpectedError);
+      const message = unexpectedError.message || 'Something went wrong while signing in.';
+      setAuthError(message);
+      window.alert(message);
     } finally {
       if (submitBtn) {
         submitBtn.disabled = false;
@@ -1635,10 +1670,13 @@
     }
 
     supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session && event === 'SIGNED_IN') {
-        await enterAppAfterLogin();
-      } else if (event === 'SIGNED_OUT') {
+      if (event === 'SIGNED_OUT') {
         showAuthScreen();
+        return;
+      }
+
+      if (session && event === 'SIGNED_IN' && els.appShell.hidden) {
+        await enterAppAfterLogin();
       }
     });
   }
