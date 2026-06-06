@@ -1304,25 +1304,40 @@
   }
 
   async function enterAppAfterLogin() {
-    if (enteringApp) return;
-    enteringApp = true;
+    if (enteringApp) {
+      return enteringApp;
+    }
 
-    try {
+    enteringApp = (async () => {
       showAppShell();
       setAuthStatus('');
 
+      if (!appInitialized) {
+        initApp();
+      }
+
       try {
         await loadDataFromCloud();
+        renderGrid();
+        renderComplaints();
+        renderList();
+        updateSaveStatus('cloud');
       } catch (error) {
         console.error(error);
         window.alert(
           error.message ||
-            'Signed in, but could not load your log. Check that supabase-setup.sql was run in Supabase.'
+            'Signed in, but could not load your log from the cloud. You can still use the app locally.'
         );
         loadDataLocal();
+        renderGrid();
+        renderComplaints();
+        renderList();
+        updateSaveStatus('local');
       }
+    })();
 
-      initApp();
+    try {
+      await enteringApp;
     } finally {
       enteringApp = false;
     }
@@ -1669,14 +1684,9 @@
       showAuthScreen();
     }
 
-    supabase.auth.onAuthStateChange(async (event, session) => {
+    supabase.auth.onAuthStateChange((event) => {
       if (event === 'SIGNED_OUT') {
         showAuthScreen();
-        return;
-      }
-
-      if (session && event === 'SIGNED_IN' && els.appShell.hidden) {
-        await enterAppAfterLogin();
       }
     });
   }
