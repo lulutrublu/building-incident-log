@@ -73,6 +73,7 @@
   let cloudEnabled = false;
   let appInitialized = false;
   let saveInFlight = null;
+  let authEventsBound = false;
 
   const els = {
     weekRange: document.getElementById('weekRange'),
@@ -1436,6 +1437,18 @@
     URL.revokeObjectURL(url);
   }
 
+  function bindAuthEvents() {
+    if (authEventsBound) return;
+    authEventsBound = true;
+
+    if (els.authForm) {
+      els.authForm.addEventListener('submit', handleAuthSubmit);
+    }
+    if (els.authSignUp) {
+      els.authSignUp.addEventListener('click', handleAuthSignUp);
+    }
+  }
+
   function bindEvents() {
     els.prevWeek.addEventListener('click', () => {
       const d = new Date(currentWeekStart);
@@ -1535,12 +1548,6 @@
       els.importFile.value = '';
     });
 
-    if (els.authForm) {
-      els.authForm.addEventListener('submit', handleAuthSubmit);
-    }
-    if (els.authSignUp) {
-      els.authSignUp.addEventListener('click', handleAuthSignUp);
-    }
     if (els.signOut) {
       els.signOut.addEventListener('click', handleSignOut);
     }
@@ -1552,6 +1559,10 @@
 
     if (els.signOut) {
       els.signOut.hidden = !cloudEnabled;
+    }
+
+    if (cloudEnabled) {
+      bindAuthEvents();
     }
 
     if (!cloudEnabled) {
