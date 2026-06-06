@@ -126,8 +126,8 @@ body {
   font-size: 0.85rem;
 }
 
-.auth-setup summary {
-  cursor: pointer;
+.auth-setup-title {
+  margin: 0 0 0.35rem;
   font-weight: 600;
   color: var(--accent);
 }
