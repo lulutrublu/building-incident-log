@@ -2,6 +2,8 @@
   'use strict';
 
   const STORAGE_KEY = 'buildingIncidentLog';
+  const PENDING_SYNC_KEY = 'buildingIncidentLogPendingSync';
+  const SET_ASIDE_KEY = 'buildingIncidentLogSetAside';
 
   const INCIDENT_TYPES = [
     { id: 'smoking', label: 'Smoking' },
@@ -309,64 +311,67 @@
     );
   }
 
-  async function syncAllToCloud() {
-    if (!cloudEnabled || !supabase) return;
-
-    const incidentRows = incidents.map(incidentToRow);
-    if (incidentRows.length) {
-      const { error } = await supabase.from('incidents').upsert(incidentRows, { onConflict: 'id' });
-      if (error) throw error;
-    }
-
-    const { data: serverIncidents, error: fetchIncError } = await supabase
-      .from('incidents')
-      .select('id');
-    if (fetchIncError) throw fetchIncError;
-
-    const localIncidentIds = new Set(incidents.map((inc) => inc.id));
-    const incidentIdsToDelete = (serverIncidents || [])
-      .map((row) => row.id)
-      .filter((id) => !localIncidentIds.has(id));
-    if (incidentIdsToDelete.length) {
-      const { error: deleteIncError } = await supabase
-        .from('incidents')
-        .delete()
-        .in('id', incidentIdsToDelete);
-      if (deleteIncError) throw deleteIncError;
-    }
-
-    const complaintRows = complaints.map(complaintToRow);
-    if (complaintRows.length) {
-      const { error: complaintError } = await supabase
-        .from('complaints')
-        .upsert(complaintRows, { onConflict: 'id' });
-      if (complaintError) throw complaintError;
-    }
-
-    const { data: serverComplaints, error: fetchCompError } = await supabase
-      .from('complaints')
-      .select('id');
-    if (fetchCompError) throw fetchCompError;
-
-    const localComplaintIds = new Set(complaints.map((c) => c.id));
-    const complaintIdsToDelete = (serverComplaints || [])
-      .map((row) => row.id)
-      .filter((id) => !localComplaintIds.has(id));
-    if (complaintIdsToDelete.length) {
-      const { error: deleteCompError } = await supabase
-        .from('complaints')
-        .delete()
-        .in('id', complaintIdsToDelete);
-      if (deleteCompError) throw deleteCompError;
+  // Cloud records are only ever deleted by an explicit Delete on some device.
+  // A device that is missing records must never remove them from the cloud.
+  function readPendingSync() {
+    const empty = {
+      upsertIncidents: [],
+      deleteIncidents: [],
+      upsertComplaints: [],
+      deleteComplaints: [],
+    };
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '{}');
+      return {
+        upsertIncidents: parsed.upsertIncidents || [],
+        deleteIncidents: parsed.deleteIncidents || [],
+        upsertComplaints: parsed.upsertComplaints || [],
+        deleteComplaints: parsed.deleteComplaints || [],
+      };
+    } catch {
+      return empty;
     }
   }
 
-  async function loadDataFromCloud() {
-    if (!cloudEnabled || !supabase) {
-      loadDataLocal();
-      return;
-    }
+  function writePendingSync(pending) {
+    localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(pending));
+  }
 
+  function hasPendingSync() {
+    const pending = readPendingSync();
+    return Object.values(pending).some((ids) => ids.length > 0);
+  }
+
+  function markForUpsert(kind, ids) {
+    const pending = readPendingSync();
+    const upserts = new Set(pending[`upsert${kind}`]);
+    const deletes = new Set(pending[`delete${kind}`]);
+    ids.forEach((id) => {
+      upserts.add(id);
+      deletes.delete(id);
+    });
+    pending[`upsert${kind}`] = [...upserts];
+    pending[`delete${kind}`] = [...deletes];
+    writePendingSync(pending);
+  }
+
+  function markForDelete(kind, id) {
+    const pending = readPendingSync();
+    pending[`upsert${kind}`] = pending[`upsert${kind}`].filter((pendingId) => pendingId !== id);
+    if (!pending[`delete${kind}`].includes(id)) pending[`delete${kind}`].push(id);
+    writePendingSync(pending);
+  }
+
+  function clearPendingIds(kind, upsertedIds, deletedIds) {
+    const pending = readPendingSync();
+    const upserted = new Set(upsertedIds);
+    const deleted = new Set(deletedIds);
+    pending[`upsert${kind}`] = pending[`upsert${kind}`].filter((id) => !upserted.has(id));
+    pending[`delete${kind}`] = pending[`delete${kind}`].filter((id) => !deleted.has(id));
+    writePendingSync(pending);
+  }
+
+  async function fetchCloudRows() {
     const [{ data: incidentRows, error: incError }, { data: complaintRows, error: compError }] =
       await Promise.all([
         supabase.from('incidents').select('*'),
@@ -382,19 +387,183 @@
     }
     if (compError) throw compError;
 
-    const cloudEmpty = !incidentRows?.length && !complaintRows?.length;
-    if (cloudEmpty) {
-      loadDataLocal();
-      if (incidents.length || complaints.length) {
-        await syncAllToCloud();
-      }
-      saveDataLocal();
-      return;
+    return { incidentRows: incidentRows || [], complaintRows: complaintRows || [] };
+  }
+
+  function applyCloudRows(incidentRows, complaintRows) {
+    const pending = readPendingSync();
+
+    const pendingIncidentIds = new Set(pending.upsertIncidents);
+    const deletedIncidentIds = new Set(pending.deleteIncidents);
+    const unsyncedIncidents = incidents.filter((inc) => pendingIncidentIds.has(inc.id));
+    incidents = incidentRows
+      .map(rowToIncident)
+      .filter((inc) => !deletedIncidentIds.has(inc.id) && !pendingIncidentIds.has(inc.id))
+      .concat(unsyncedIncidents);
+
+    const pendingComplaintIds = new Set(pending.upsertComplaints);
+    const deletedComplaintIds = new Set(pending.deleteComplaints);
+    const unsyncedComplaints = complaints.filter((c) => pendingComplaintIds.has(c.id));
+    complaints = complaintRows
+      .map(rowToComplaint)
+      .filter((c) => !deletedComplaintIds.has(c.id) && !pendingComplaintIds.has(c.id))
+      .concat(unsyncedComplaints);
+
+    saveDataLocal();
+  }
+
+  function downloadJson(payload, filename) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function setAsideRecords(asideIncidents, asideComplaints) {
+    let existing = { incidents: [], complaints: [] };
+    try {
+      existing = JSON.parse(localStorage.getItem(SET_ASIDE_KEY) || '{}');
+    } catch {
+      existing = {};
     }
 
-    incidents = (incidentRows || []).map(rowToIncident);
-    complaints = (complaintRows || []).map(rowToComplaint);
-    saveDataLocal();
+    const byId = (list) => new Map((list || []).map((record) => [record.id, record]));
+    const incidentMap = byId(existing.incidents);
+    const complaintMap = byId(existing.complaints);
+    asideIncidents.forEach((inc) => incidentMap.set(inc.id, inc));
+    asideComplaints.forEach((c) => complaintMap.set(c.id, c));
+
+    const payload = {
+      app: 'Building Incident Log',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      incidents: [...incidentMap.values()],
+      complaints: [...complaintMap.values()],
+    };
+    localStorage.setItem(SET_ASIDE_KEY, JSON.stringify(payload));
+    downloadJson(payload, `building-incident-set-aside-${formatDateISO(new Date())}.json`);
+  }
+
+  function reconcileDeviceOnlyRecords(incidentRows, complaintRows) {
+    const pending = readPendingSync();
+    const cloudIncidentIds = new Set(incidentRows.map((row) => row.id));
+    const cloudComplaintIds = new Set(complaintRows.map((row) => row.id));
+    const pendingIncidentIds = new Set(pending.upsertIncidents);
+    const pendingComplaintIds = new Set(pending.upsertComplaints);
+
+    const deviceOnlyIncidents = incidents.filter(
+      (inc) => !cloudIncidentIds.has(inc.id) && !pendingIncidentIds.has(inc.id)
+    );
+    const deviceOnlyComplaints = complaints.filter(
+      (c) => !cloudComplaintIds.has(c.id) && !pendingComplaintIds.has(c.id)
+    );
+
+    if (!deviceOnlyIncidents.length && !deviceOnlyComplaints.length) return;
+
+    const dates = deviceOnlyIncidents.map((inc) => inc.date).sort();
+    const parts = [];
+    if (deviceOnlyIncidents.length) {
+      const range =
+        dates[0] === dates[dates.length - 1]
+          ? formatDisplayDate(dates[0])
+          : `${formatDisplayDate(dates[0])} – ${formatDisplayDate(dates[dates.length - 1])}`;
+      parts.push(
+        `${deviceOnlyIncidents.length} incident${deviceOnlyIncidents.length === 1 ? '' : 's'} (${range})`
+      );
+    }
+    if (deviceOnlyComplaints.length) {
+      parts.push(
+        `${deviceOnlyComplaints.length} complaint${deviceOnlyComplaints.length === 1 ? '' : 's'}`
+      );
+    }
+
+    const addToCloud = window.confirm(
+      `This device has ${parts.join(' and ')} not found in the shared cloud log.\n\n` +
+        'OK = add them to the shared log.\n' +
+        'Cancel = keep them aside on this device and download a copy (nothing is deleted).'
+    );
+
+    if (addToCloud) {
+      markForUpsert('Incidents', deviceOnlyIncidents.map((inc) => inc.id));
+      markForUpsert('Complaints', deviceOnlyComplaints.map((c) => c.id));
+    } else {
+      setAsideRecords(deviceOnlyIncidents, deviceOnlyComplaints);
+    }
+  }
+
+  function recordStamp(record) {
+    return Date.parse(record?.updatedAt || record?.createdAt || '') || 0;
+  }
+
+  async function pushPendingChanges(kind, table, getLocalRecords, cloudRecords, toRow) {
+    const pending = readPendingSync();
+    const upsertIds = pending[`upsert${kind}`];
+    const deleteIds = pending[`delete${kind}`];
+    const localById = new Map(getLocalRecords().map((record) => [record.id, record]));
+    const cloudById = new Map(cloudRecords.map((record) => [record.id, record]));
+    const queuedStamps = new Map(upsertIds.map((id) => [id, localById.get(id)?.updatedAt]));
+
+    // A queued edit never overwrites a newer edit made on another device.
+    const toUpload = upsertIds
+      .map((id) => localById.get(id))
+      .filter((record) => record && recordStamp(record) >= recordStamp(cloudById.get(record.id)));
+
+    if (toUpload.length) {
+      const { error } = await supabase
+        .from(table)
+        .upsert(toUpload.map(toRow), { onConflict: 'id' });
+      if (error) throw error;
+    }
+    if (deleteIds.length) {
+      const { error } = await supabase.from(table).delete().in('id', deleteIds);
+      if (error) throw error;
+    }
+
+    // Records edited again while this upload ran stay queued for the next sync.
+    const currentById = new Map(getLocalRecords().map((record) => [record.id, record]));
+    const settledIds = upsertIds.filter(
+      (id) => currentById.get(id)?.updatedAt === queuedStamps.get(id)
+    );
+    clearPendingIds(kind, settledIds, deleteIds);
+  }
+
+  async function syncPendingToCloud() {
+    if (!cloudEnabled || !supabase) return;
+
+    const before = await fetchCloudRows();
+    await pushPendingChanges(
+      'Incidents',
+      'incidents',
+      () => incidents,
+      before.incidentRows.map(rowToIncident),
+      incidentToRow
+    );
+    await pushPendingChanges(
+      'Complaints',
+      'complaints',
+      () => complaints,
+      before.complaintRows.map(rowToComplaint),
+      complaintToRow
+    );
+
+    const after = await fetchCloudRows();
+    applyCloudRows(after.incidentRows, after.complaintRows);
+  }
+
+  async function loadDataFromCloud() {
+    loadDataLocal();
+    if (!cloudEnabled || !supabase) return;
+
+    const cloud = await fetchCloudRows();
+    reconcileDeviceOnlyRecords(cloud.incidentRows, cloud.complaintRows);
+    applyCloudRows(cloud.incidentRows, cloud.complaintRows);
+
+    if (hasPendingSync()) {
+      await syncPendingToCloud();
+    }
   }
 
   async function saveData() {
@@ -408,7 +577,7 @@
     updateSaveStatus('syncing');
 
     const syncPromise = (async () => {
-      await syncAllToCloud();
+      await syncPendingToCloud();
       updateSaveStatus('cloud');
     })();
 
@@ -420,7 +589,7 @@
       console.error(error);
       updateSaveStatus('error');
       window.alert(
-        'Saved locally, but cloud sync failed. Check your connection and try again.'
+        'Saved on this device, but cloud sync failed. It will sync automatically the next time the app connects.'
       );
     } finally {
       if (saveInFlight === syncPromise) {
@@ -1029,7 +1198,7 @@
 
     if (!data.date || Number.isNaN(data.hour) || !data.type) return;
 
-    const duplicateIdx = incidents.findIndex(
+    const existingAtCell = incidents.find(
       (inc) =>
         inc.date === data.date &&
         inc.hour === data.hour &&
@@ -1037,14 +1206,30 @@
         inc.id !== data.id
     );
 
-    if (duplicateIdx >= 0) {
-      incidents[duplicateIdx] = { ...incidents[duplicateIdx], ...data };
+    if (existingAtCell) {
+      const replace = window.confirm(
+        `An incident is already logged for ${getTypeLabel(data.type)} on ` +
+          `${formatDisplayDate(data.date)}, ${getHourLabel(data.hour)}.\n\n` +
+          'OK = replace that entry with this one.\nCancel = go back without saving.'
+      );
+      if (!replace) return;
+
+      const replaced = { ...existingAtCell, ...data, id: existingAtCell.id };
+      incidents = incidents.map((inc) => (inc.id === existingAtCell.id ? replaced : inc));
+      markForUpsert('Incidents', [existingAtCell.id]);
+
+      if (editingId && editingId !== existingAtCell.id) {
+        incidents = incidents.filter((inc) => inc.id !== editingId);
+        markForDelete('Incidents', editingId);
+      }
     } else if (editingId) {
       const idx = incidents.findIndex((inc) => inc.id === editingId);
       if (idx >= 0) incidents[idx] = { ...incidents[idx], ...data };
       else incidents.push({ ...data, createdAt: new Date().toISOString() });
+      markForUpsert('Incidents', [data.id]);
     } else {
       incidents.push({ ...data, createdAt: new Date().toISOString() });
+      markForUpsert('Incidents', [data.id]);
     }
 
     await saveData();
@@ -1088,6 +1273,7 @@
     } else {
       complaints.push({ ...data, createdAt: new Date().toISOString() });
     }
+    markForUpsert('Complaints', [data.id]);
 
     await saveData();
     closeComplaintModalDialog();
@@ -1098,7 +1284,9 @@
 
   async function handleDelete() {
     if (!editingId) return;
+    if (!window.confirm('Delete this incident? It will be removed from every device.')) return;
     incidents = incidents.filter((inc) => inc.id !== editingId);
+    markForDelete('Incidents', editingId);
     await saveData();
     closeModalDialog();
     renderGrid();
@@ -1108,7 +1296,9 @@
 
   async function handleComplaintDelete() {
     if (!editingComplaintId) return;
+    if (!window.confirm('Delete this complaint record? It will be removed from every device.')) return;
     complaints = complaints.filter((c) => c.id !== editingComplaintId);
+    markForDelete('Complaints', editingComplaintId);
     await saveData();
     closeComplaintModalDialog();
     renderGrid();
@@ -1268,13 +1458,31 @@
       incidents,
       complaints,
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `building-incident-backup-${formatDateISO(new Date())}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadJson(payload, `building-incident-backup-${formatDateISO(new Date())}.json`);
+  }
+
+  function mergeRecords(current, imported) {
+    const byId = new Map(current.map((record) => [record.id, record]));
+    const changedIds = [];
+    let added = 0;
+    let updated = 0;
+
+    imported.forEach((record) => {
+      const existing = byId.get(record.id);
+      if (!existing) {
+        byId.set(record.id, record);
+        changedIds.push(record.id);
+        added += 1;
+        return;
+      }
+      if (recordStamp(record) > recordStamp(existing)) {
+        byId.set(record.id, record);
+        changedIds.push(record.id);
+        updated += 1;
+      }
+    });
+
+    return { records: [...byId.values()], changedIds, added, updated };
   }
 
   function importBackup(file) {
@@ -1285,39 +1493,51 @@
         const importedIncidents = Array.isArray(data) ? data : data.incidents;
         if (!Array.isArray(importedIncidents)) throw new Error('Invalid backup format');
 
-        const importedComplaints = Array.isArray(data) ? [] : data.complaints || [];
+        let importedComplaints = Array.isArray(data) ? [] : data.complaints || [];
+        if (Array.isArray(data) && data.some((inc) => inc.landlordComplaintSubmitted)) {
+          importedComplaints = migrateLandlordFieldsToComplaints(data);
+        }
         const incidentCount = importedIncidents.length;
         const complaintCount = importedComplaints.length;
 
-        const replace = window.confirm(
-          `Restore ${incidentCount} incident${incidentCount === 1 ? '' : 's'}` +
+        const proceed = window.confirm(
+          `Add ${incidentCount} incident${incidentCount === 1 ? '' : 's'}` +
             (complaintCount
               ? ` and ${complaintCount} complaint${complaintCount === 1 ? '' : 's'}`
               : '') +
-            '?\n\nOK replaces all current data. Cancel keeps your existing log.'
+            ' from this backup to your log?\n\n' +
+            'Nothing in your current log is deleted. Where the same record exists in both, ' +
+            'the more recently edited version is kept.'
         );
-        if (!replace) return;
+        if (!proceed) return;
 
-        incidents = importedIncidents.map((incident) => ({
-          ...stripIncidentLandlordFields(incident),
-          impact: normalizeImpacts(incident.impact),
-        }));
-        complaints = importedComplaints.map(normalizeComplaint);
+        const incidentMerge = mergeRecords(
+          incidents,
+          importedIncidents.map((incident) => ({
+            ...stripIncidentLandlordFields(incident),
+            impact: normalizeImpacts(incident.impact),
+          }))
+        );
+        const complaintMerge = mergeRecords(
+          complaints,
+          importedComplaints.map(normalizeComplaint)
+        );
 
-        if (Array.isArray(data) && data.some((inc) => inc.landlordComplaintSubmitted)) {
-          complaints = migrateLandlordFieldsToComplaints(data).map(normalizeComplaint);
-        }
+        incidents = incidentMerge.records;
+        complaints = complaintMerge.records;
+        markForUpsert('Incidents', incidentMerge.changedIds);
+        markForUpsert('Complaints', complaintMerge.changedIds);
 
         await saveData();
         renderGrid();
         renderList();
         renderComplaints();
         window.alert(
-          `Restored ${incidents.length} incident${incidents.length === 1 ? '' : 's'}` +
-            (complaints.length
-              ? ` and ${complaints.length} complaint${complaints.length === 1 ? '' : 's'}`
-              : '') +
-            '.'
+          `Restore complete.\n\n` +
+            `Incidents: ${incidentMerge.added} added, ${incidentMerge.updated} updated.\n` +
+            `Complaints: ${complaintMerge.added} added, ${complaintMerge.updated} updated.\n\n` +
+            `Your log now has ${incidents.length} incident${incidents.length === 1 ? '' : 's'}` +
+            ` and ${complaints.length} complaint${complaints.length === 1 ? '' : 's'}.`
         );
       } catch {
         window.alert('Could not read that file. Please choose a valid backup JSON file.');
@@ -1694,6 +1914,8 @@
 
     if (cloudEnabled) {
       bindAuthEvents();
+      showAuthScreen();
+      setAuthStatus('Loading…');
     }
 
     if (!cloudEnabled) {
@@ -1703,11 +1925,26 @@
       return;
     }
 
-    const { data: { session } } = await supabase.auth.getSession();
+    let session = null;
+    try {
+      const result = await Promise.race([
+        supabase.auth.getSession(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Connection timed out')), 15000)
+        ),
+      ]);
+      session = result.data?.session ?? null;
+    } catch (error) {
+      console.error(error);
+      setAuthStatus('');
+      setAuthError(
+        'Could not reach the cloud server. Try again, or use “Use without cloud sync” below.'
+      );
+    }
+
+    setAuthStatus('');
     if (session) {
       await enterAppAfterLogin();
-    } else {
-      showAuthScreen();
     }
 
     supabase.auth.onAuthStateChange((event) => {
